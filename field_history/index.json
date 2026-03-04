@@ -1,0 +1,15 @@
+[
+  {
+    "id": "20260304_201325",
+    "timestamp": "2026-03-04T20:13:25.271925",
+    "date_display": "04 Mar 2026, 08:13 PM",
+    "image_file": "snap_20260304_201325.jpg",
+    "predicted_class": "severe",
+    "severity_pct": 65.0,
+    "confidence": 50.3,
+    "crop": "sugarcane",
+    "acres": 1.0,
+    "farmer_name": "",
+    "field_name": ""
+  }
+]

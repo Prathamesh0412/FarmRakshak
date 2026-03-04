@@ -1,0 +1,26 @@
+# FarmRakshak v2.0 Requirements
+# Install: pip install -r requirements.txt
+
+# Core AI/ML
+torch>=2.1.0
+torchvision>=0.16.0
+
+# Web App
+streamlit>=1.32.0
+
+# Image Processing
+Pillow>=10.0.0
+opencv-python-headless>=4.8.0
+numpy>=1.24.0
+
+# Visualization
+matplotlib>=3.7.0
+
+# PDF Report Generation
+reportlab>=4.0.0
+
+# Utilities
+tqdm>=4.65.0
+
+# Note: TTS uses browser Web Speech API (no Python package needed)
+# Voice output works offline in Chrome, Firefox, Edge
