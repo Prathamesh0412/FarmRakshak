@@ -157,7 +157,7 @@ def main():
         val_loss, val_acc     = validate(model, val_loader, criterion, DEVICE)
         scheduler.step()
 
-        print(f"Epoch [{epoch+1:02d}/{CONFIG[num_epochs]}] "
+          print(f"Epoch [{epoch+1:02d}/{CONFIG['num_epochs']}] "
               f"Train Loss: {train_loss:.4f} Acc: {train_acc:.1f}%  "
               f"Val Loss: {val_loss:.4f} Acc: {val_acc:.1f}%")
 
@@ -174,7 +174,7 @@ def main():
                 break
 
     print(f"Training complete. Best Val Accuracy: {best_val_acc:.1f}%")
-    print(f"Model saved to: {CONFIG[save_path]}")
+    print(f"Model saved to: {CONFIG['save_path']}")
 
 
 if __name__ == "__main__":
