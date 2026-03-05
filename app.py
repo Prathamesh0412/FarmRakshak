@@ -11,13 +11,6 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from datetime import datetime
 
-st.set_page_config(
-    page_title="FarmRakshak v2",
-    page_icon="🌾",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 # ── Paths ──────────────────────────────────────────────────────────────────────
 BASE_DIR        = os.path.dirname(os.path.abspath(__file__))
 TRANSLATIONS_DIR = os.path.join(BASE_DIR, "translations")
@@ -40,6 +33,17 @@ def load_translations(lang_code):
 
 def t(key):
     return st.session_state.get("translations", {}).get(key, key)
+
+
+def ensure_i18n(default_lang="English"):
+    """Ensure translations and lang_code are in session; return (lang_code, tr)."""
+    lang_code = st.session_state.get("lang_code")
+    if not lang_code:
+        lang_code = LANGUAGES.get(default_lang, "en")
+    tr = st.session_state.get("translations") or load_translations(lang_code)
+    st.session_state["translations"] = tr
+    st.session_state["lang_code"] = lang_code
+    return lang_code, tr
 
 # ── CSS Injection ──────────────────────────────────────────────────────────────
 def inject_css():
@@ -496,6 +500,13 @@ def render_results(result, pil_image, tr, lang_code):
 
 # ── MAIN APP ───────────────────────────────────────────────────────────────────
 def main():
+    st.set_page_config(
+        page_title="FarmRakshak v2",
+        page_icon="🌾",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+
     inject_css()
 
     # Sidebar: language + farmer info
@@ -521,8 +532,7 @@ def main():
         st.caption("FarmRakshak v2.0\nEfficientNet-B0 | PyTorch\n4-Class Lodging Detection")
         st.caption("Features:\n\u2714 Voice Output\n\u2714 Yield Loss \u20b9\n\u2714 Field History\n\u2714 PMFBY Report")
 
-    lang_code = st.session_state.get("lang_code", "en")
-    tr = st.session_state.get("translations") or load_translations(lang_code)
+    lang_code, tr = ensure_i18n(lang_choice)
 
     # ── Hero Section ─────────────────────────────────────────────────────────────
     st.markdown(f"""
@@ -563,12 +573,14 @@ def main():
             st.markdown("**Severity:** Healthy(0%) | Mild(15%) | Moderate(35%) | Severe(65%+)")
 
     with right:
-        if uploaded is None:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown(f'<div class="card-title">\U0001f4ca {tr.get("results_title","Assessment Results")}</div>', unsafe_allow_html=True)
+        if uploaded is None and "last_result" not in st.session_state:
             st.markdown(
-                f'<div style="background:#fff;border:2px dashed #C5D9B8;border-radius:14px;height:420px;'
+                f'<div style="background:#fff;border:2px dashed #C5D9B8;border-radius:14px;height:320px;'
                 f'display:flex;flex-direction:column;align-items:center;justify-content:center;'
                 f'text-align:center;color:#9BA88F;padding:2rem;">'
-                f'<div style="font-size:3.5rem;margin-bottom:0.8rem;">\U0001f33e</div>'
+                f'<div style="font-size:3.2rem;margin-bottom:0.6rem;">\U0001f33e</div>'
                 f'<div style="font-weight:500;color:#7A8A70;font-size:1rem;">{tr.get("no_image","Upload an image to begin")}</div>'
                 f'<div style="font-size:0.82rem;margin-top:0.3rem;">{tr.get("upload_hint","JPG PNG")}</div>'
                 f'</div>',
@@ -584,14 +596,34 @@ def main():
                 except Exception as e:
                     st.error(f"{tr.get('error_title','Error')}: {e}")
                     return
-            render_results(result, Image.open(uploaded), tr, lang_code)
+            st.success(tr.get("report_ready","Analysis complete."))
+            st.page_link("pages/1_Results_and_Insights.py", label=tr.get("results_title","Assessment Results") + " →")
 
         elif "last_result" in st.session_state:
-            render_results(
-                st.session_state["last_result"],
-                st.session_state.get("last_image", Image.open(uploaded)),
-                tr, lang_code
+            result = st.session_state["last_result"]
+            pred  = result.get("predicted_class","—")
+            sev   = result.get("severity_pct",0)
+            conf  = result.get("confidence",0)
+            color = CLASS_COLORS.get(pred, "#1B5E20")
+            emoji = SEVERITY_EMOJI.get(pred, "")
+            st.markdown(
+                f'<div class="result-pill" style="background:{color}22;color:{color};border:1.5px solid {color};">'
+                f'{emoji} {tr.get(pred, pred.title())}</div>',
+                unsafe_allow_html=True
             )
+            st.markdown(f"**{tr.get('severity_label','Severity')}:** {sev:.1f}% | **{tr.get('confidence_label','Confidence')}:** {conf:.1f}%")
+            st.page_link("pages/1_Results_and_Insights.py", label=tr.get("results_title","Assessment Results") + " →")
+            st.page_link("pages/2_Yield_Loss_Estimator.py", label=tr.get("yield_tab","Yield Loss (₹)") + " →")
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("#### Quick navigation")
+    nav_cols = st.columns(4)
+    nav_cols[0].page_link("pages/1_Results_and_Insights.py", label="Results")
+    nav_cols[1].page_link("pages/2_Yield_Loss_Estimator.py", label="Yield Loss (₹)")
+    nav_cols[2].page_link("pages/3_Field_History.py", label="Field History")
+    nav_cols[3].page_link("pages/4_PMF_BY_Report.py", label="PMFBY Report")
 
     st.markdown(f'<div class="footer">{tr.get("footer","FarmRakshak v2.0 2024 - Protecting Farmers with AI")}</div>', unsafe_allow_html=True)
 
