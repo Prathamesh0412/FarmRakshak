@@ -1,0 +1,9 @@
+{
+  "class_names": [
+    "healthy",
+    "severe"
+  ],
+  "best_val_acc": 100.0,
+  "num_epochs_configured": 20,
+  "image_size": 224
+}
