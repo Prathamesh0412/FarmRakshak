@@ -5,21 +5,26 @@ Loads the trained FarmRakshak model and runs inference on a PIL image.
 Also includes optional Grad-CAM visualization for explainability.
 """
 
-import os, sys, torch, torch.nn as nn, numpy as np
+import os, sys, json, torch, torch.nn as nn, numpy as np
 from PIL import Image
 from torchvision import models
 from typing import Optional, Tuple, Dict
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.preprocessing import preprocess_image, denormalize
-from utils.severity import parse_model_output, CLASS_NAMES
+from utils.severity import get_severity_score
 
-NUM_CLASSES = 4
+DEFAULT_CLASS_NAMES = ["healthy", "mild", "moderate", "severe"]
 MODEL_PATH  = os.path.join(os.path.dirname(__file__), "model.pth")
+METADATA_PATH = os.path.join(os.path.dirname(__file__), "model_metadata.json")
 DEVICE      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def build_model(num_classes=NUM_CLASSES):
+class ModelNotReadyError(RuntimeError):
+    """Raised when the trained model artifacts are missing or invalid."""
+
+
+def build_model(num_classes=4):
     """Builds EfficientNet-B0 with custom head for crop lodging classification."""
     model = models.efficientnet_b0(weights=None)
     in_features = model.classifier[1].in_features
@@ -34,23 +39,39 @@ def build_model(num_classes=NUM_CLASSES):
 
 
 _model_cache = None
+_class_names_cache = None
 
 def load_model():
     """Loads trained model from disk with singleton caching."""
-    global _model_cache
+    global _model_cache, _class_names_cache
     if _model_cache is not None:
-        return _model_cache
-    model = build_model(NUM_CLASSES)
-    if os.path.exists(MODEL_PATH):
-        state_dict = torch.load(MODEL_PATH, map_location=DEVICE)
-        model.load_state_dict(state_dict)
-        print(f"[FarmRakshak] Model loaded from {MODEL_PATH}")
-    else:
-        print("[FarmRakshak] WARNING: model.pth not found. Using demo model.")
+        return _model_cache, _class_names_cache
+    if not os.path.exists(MODEL_PATH):
+        raise ModelNotReadyError(
+            f"Trained model not found at {MODEL_PATH}. Train the model first using model/train.py."
+        )
+
+    class_names = DEFAULT_CLASS_NAMES
+    if os.path.exists(METADATA_PATH):
+        with open(METADATA_PATH, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
+        meta_class_names = metadata.get("class_names")
+        if meta_class_names:
+            class_names = meta_class_names
+    if len(class_names) < 2:
+        raise ModelNotReadyError(
+            f"Invalid class_names in metadata: {class_names}. Need at least 2 classes."
+        )
+
+    model = build_model(len(class_names))
+    state_dict = torch.load(MODEL_PATH, map_location=DEVICE)
+    model.load_state_dict(state_dict)
+    print(f"[FarmRakshak] Model loaded from {MODEL_PATH}")
     model.to(DEVICE)
     model.eval()
     _model_cache = model
-    return model
+    _class_names_cache = class_names
+    return model, class_names
 
 
 class GradCAM:
@@ -92,11 +113,18 @@ def overlay_heatmap(original_image, cam, alpha=0.45):
 
 def predict(pil_image, generate_gradcam=True):
     """Full inference pipeline: preprocess, predict, postprocess."""
-    model = load_model()
+    model, class_names = load_model()
     input_tensor = preprocess_image(pil_image).to(DEVICE)
     with torch.set_grad_enabled(generate_gradcam):
         logits = model(input_tensor)
-    predicted_class, confidence, severity_pct, class_probs = parse_model_output(logits)
+    probs = torch.softmax(logits, dim=1).squeeze(0)
+    probs_list = probs.tolist()
+    class_probs = {name: round(probs_list[i] * 100, 1)
+                   for i, name in enumerate(class_names)}
+    top_idx = probs.argmax().item()
+    predicted_class = class_names[top_idx]
+    confidence = probs_list[top_idx]
+    severity_pct = get_severity_score(predicted_class, confidence)
     result = {
         "predicted_class": predicted_class,
         "confidence":      round(confidence * 100, 1),
@@ -106,7 +134,7 @@ def predict(pil_image, generate_gradcam=True):
     }
     if generate_gradcam:
         try:
-            class_idx = CLASS_NAMES.index(predicted_class)
+            class_idx = class_names.index(predicted_class)
             gcam = GradCAM(model)
             cam = gcam.generate(input_tensor, class_idx)
             result["gradcam_overlay"] = overlay_heatmap(pil_image, cam)

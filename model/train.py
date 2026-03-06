@@ -26,6 +26,7 @@ FREE DATASETS:
 """
 
 import os
+import json
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -41,19 +42,17 @@ from utils.preprocessing import get_training_transform, get_inference_transform
 CONFIG = {
     "data_dir":    "./data",          # Path to your dataset root
     "save_path":   "./model/model.pth",
-    "num_classes": 4,
+    "num_classes": None,              # Auto-detected from dataset classes
     "batch_size":  32,
-    "num_epochs":  25,
+    "num_epochs":  8,                 # Kept small for quick local training
     "lr":          1e-4,               # Fine-tuning learning rate
     "backbone_lr": 1e-5,               # Lower LR for pretrained layers
     "weight_decay": 1e-4,
-    "patience":    5,                  # Early stopping patience
+    "patience":    3,                  # Early stopping patience
 }
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"[FarmRakshak] Using device: {DEVICE}")
-
-
 def build_efficientnet(num_classes):
     """
     Load pretrained EfficientNet-B0 and replace the classifier head.
@@ -79,21 +78,49 @@ def build_efficientnet(num_classes):
 
 def get_dataloaders(data_dir, batch_size):
     """Creates train and validation DataLoaders with appropriate transforms."""
+    train_root = os.path.join(data_dir, "train")
+    val_root = os.path.join(data_dir, "val")
+    if not os.path.isdir(train_root) or not os.path.isdir(val_root):
+        raise FileNotFoundError(
+            f"Dataset folders missing. Expected '{train_root}' and '{val_root}'."
+        )
+
+    valid_ext = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".ppm", ".pgm"}
+    train_count = 0
+    for root, _, files in os.walk(train_root):
+        train_count += sum(1 for f in files if os.path.splitext(f)[1].lower() in valid_ext)
+    tiny_mode = train_count < 30
+    train_transform = get_inference_transform() if tiny_mode else get_training_transform()
+    if tiny_mode:
+        print(f"[FarmRakshak] Tiny dataset mode enabled (train images: {train_count}).")
+
     train_dataset = datasets.ImageFolder(
-        root=os.path.join(data_dir, "train"),
-        transform=get_training_transform()
+        root=train_root,
+        transform=train_transform
     )
     val_dataset = datasets.ImageFolder(
-        root=os.path.join(data_dir, "val"),
+        root=val_root,
         transform=get_inference_transform()
     )
     train_loader = DataLoader(train_dataset, batch_size=batch_size,
-                              shuffle=True, num_workers=4, pin_memory=True)
+                              shuffle=True, num_workers=0, pin_memory=False)
     val_loader   = DataLoader(val_dataset, batch_size=batch_size,
-                              shuffle=False, num_workers=4, pin_memory=True)
+                              shuffle=False, num_workers=0, pin_memory=False)
     print(f"[FarmRakshak] Train samples: {len(train_dataset)} | Val samples: {len(val_dataset)}")
     print(f"[FarmRakshak] Classes: {train_dataset.classes}")
-    return train_loader, val_loader
+    if train_dataset.classes != val_dataset.classes:
+        raise ValueError(
+            f"Train/val class mismatch. Train={train_dataset.classes}, Val={val_dataset.classes}."
+        )
+    if len(train_dataset.classes) < 2:
+        raise ValueError(
+            "Need at least 2 classes with images for classification training."
+        )
+    if len(train_dataset) == 0 or len(val_dataset) == 0:
+        raise ValueError(
+            "Dataset is empty. Add labeled images under data/train/* and data/val/* before training."
+        )
+    return train_loader, val_loader, train_dataset.classes, tiny_mode, train_dataset.targets
 
 
 def train_epoch(model, loader, criterion, optimizer, device):
@@ -129,35 +156,50 @@ def validate(model, loader, criterion, device):
 
 
 def main():
-    train_loader, val_loader = get_dataloaders(CONFIG["data_dir"], CONFIG["batch_size"])
-    model = build_efficientnet(CONFIG["num_classes"]).to(DEVICE)
+    os.makedirs(os.path.dirname(CONFIG["save_path"]), exist_ok=True)
+    train_loader, val_loader, class_names, tiny_mode, train_targets = get_dataloaders(
+        CONFIG["data_dir"], CONFIG["batch_size"]
+    )
+    num_epochs = 20 if tiny_mode else CONFIG["num_epochs"]
+    patience = 6 if tiny_mode else CONFIG["patience"]
+    num_classes = len(class_names)
+    model = build_efficientnet(num_classes).to(DEVICE)
+    if tiny_mode:
+        # Tiny datasets need full fine-tuning to quickly fit available signal.
+        for p in model.features.parameters():
+            p.requires_grad = True
 
     # Differential learning rates: backbone vs head
     backbone_params = list(model.features.parameters())
     head_params     = list(model.classifier.parameters())
+    lr = 5e-4 if tiny_mode else CONFIG["lr"]
+    backbone_lr = 5e-5 if tiny_mode else CONFIG["backbone_lr"]
     optimizer = optim.AdamW([
-        {"params": backbone_params, "lr": CONFIG["backbone_lr"]},
-        {"params": head_params,     "lr": CONFIG["lr"]},
+        {"params": backbone_params, "lr": backbone_lr},
+        {"params": head_params,     "lr": lr},
     ], weight_decay=CONFIG["weight_decay"])
 
     # Cosine annealing LR scheduler
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=CONFIG["num_epochs"], eta_min=1e-6
+        optimizer, T_max=num_epochs, eta_min=1e-6
     )
 
     # Class-weighted loss to handle potential imbalance
-    criterion = nn.CrossEntropyLoss()
+    class_counts = torch.bincount(torch.tensor(train_targets), minlength=num_classes).float()
+    class_weights = class_counts.sum() / torch.clamp(class_counts, min=1.0)
+    class_weights = class_weights / class_weights.sum() * num_classes
+    criterion = nn.CrossEntropyLoss(weight=class_weights.to(DEVICE))
 
     # Training loop with early stopping
-    best_val_acc = 0.0
+    best_val_acc = -1.0
     patience_counter = 0
 
-    for epoch in range(CONFIG["num_epochs"]):
+    for epoch in range(num_epochs):
         train_loss, train_acc = train_epoch(model, train_loader, criterion, optimizer, DEVICE)
         val_loss, val_acc     = validate(model, val_loader, criterion, DEVICE)
         scheduler.step()
 
-        print(f"Epoch [{epoch+1:02d}/{CONFIG['num_epochs']}] "
+        print(f"Epoch [{epoch+1:02d}/{num_epochs}] "
               f"Train Loss: {train_loss:.4f} Acc: {train_acc:.1f}%  "
               f"Val Loss: {val_loss:.4f} Acc: {val_acc:.1f}%")
 
@@ -169,12 +211,22 @@ def main():
             patience_counter = 0
         else:
             patience_counter += 1
-            if patience_counter >= CONFIG["patience"]:
+            if patience_counter >= patience:
                 print(f"Early stopping at epoch {epoch+1}")
                 break
 
     print(f"Training complete. Best Val Accuracy: {best_val_acc:.1f}%")
     print(f"Model saved to: {CONFIG['save_path']}")
+    metadata_path = os.path.join(os.path.dirname(CONFIG["save_path"]), "model_metadata.json")
+    metadata = {
+        "class_names": class_names,
+        "best_val_acc": round(best_val_acc, 4),
+        "num_epochs_configured": num_epochs,
+        "image_size": 224,
+    }
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+    print(f"Metadata saved to: {metadata_path}")
 
 
 if __name__ == "__main__":

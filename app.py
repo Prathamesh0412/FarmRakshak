@@ -3,7 +3,7 @@
 # Features: TTS | Yield Estimator | Field History | PMFBY Reports
 # =====================================================================
 
-import os, json, time, random, base64
+import os, json, base64
 import streamlit as st
 from PIL import Image
 from io import BytesIO
@@ -86,23 +86,9 @@ def inject_css():
     """, unsafe_allow_html=True)
 
 # ── Demo Predict ───────────────────────────────────────────────────────────────
-def demo_predict(pil_image):
-    import numpy as np
-    time.sleep(1.0)
-    classes = ["healthy","mild","moderate","severe"]
-    weights = [0.2,0.35,0.3,0.15]
-    pred = random.choices(classes, weights=weights)[0]
-    raw = np.abs(np.random.randn(4))
-    probs = {c: round(float(r/raw.sum()*100),1) for c,r in zip(classes,raw)}
-    sev_map = {"healthy":0.0,"mild":15.0,"moderate":35.0,"severe":65.0}
-    return {"predicted_class":pred,"confidence":probs[pred],"severity_pct":sev_map[pred],"class_probs":probs,"gradcam_overlay":None}
-
 def run_prediction(pil_image):
-    try:
-        from model.inference import predict
-        return predict(pil_image, generate_gradcam=False)
-    except Exception:
-        return demo_predict(pil_image)
+    from model.inference import predict
+    return predict(pil_image, generate_gradcam=False)
 
 # ── Prob Chart ─────────────────────────────────────────────────────────────────
 def prob_chart(class_probs, tr):
@@ -594,7 +580,14 @@ def main():
                     st.session_state["last_result"] = result
                     st.session_state["last_image"]  = img
                 except Exception as e:
-                    st.error(f"{tr.get('error_title','Error')}: {e}")
+                    err_text = str(e)
+                    if "Trained model not found" in err_text:
+                        st.error(
+                            "Model is not trained yet. Please run `python model/train.py` "
+                            "after adding data to `data/train` and `data/val`."
+                        )
+                    else:
+                        st.error(f"{tr.get('error_title','Error')}: {e}")
                     return
             st.success(tr.get("report_ready","Analysis complete."))
             st.page_link("pages/1_Results_and_Insights.py", label=tr.get("results_title","Assessment Results") + " →")
